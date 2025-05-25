@@ -1,0 +1,525 @@
+"""
+Academic Data REST API
+
+This module provides a REST API to access the academic data stored in the SQLite database.
+It allows external applications like websites to retrieve analysis results, performance data,
+and insights through HTTP requests.
+
+Usage:
+    python academic_api.py --db path/to/academic_data.db --port 5000
+"""
+
+import os
+import argparse
+import json
+import sqlite3
+import pandas as pd
+from flask import Flask, jsonify, request, g, abort
+from flask_cors import CORS
+import numpy as np
+
+# Configure Flask application
+app = Flask(__name__)
+CORS(app)  # Enable Cross-Origin Resource Sharing
+
+# Configuration
+DATABASE = 'academic_data.db'
+API_PREFIX = '/api/v1'
+
+# Custom JSON encoder to handle NumPy types
+class NumpyEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, (np.int_, np.intc, np.intp, np.int8, np.int16, np.int32, np.int64)):
+            return int(obj)
+        elif isinstance(obj, (np.float_, np.float16, np.float32, np.float64)):
+            return float(obj)
+        elif isinstance(obj, np.ndarray):
+            return obj.tolist()
+        elif isinstance(obj, np.bool_):
+            return bool(obj)
+        return json.JSONEncoder.default(self, obj)
+
+# Configure app to use custom JSON encoder
+app.json_encoder = NumpyEncoder
+
+# Database connection handling
+def get_db():
+    """Get database connection for the current request"""
+    if not hasattr(g, 'db'):
+        g.db = sqlite3.connect(app.config['DATABASE'])
+        g.db.row_factory = sqlite3.Row  # Return rows as dictionaries
+    return g.db
+
+@app.teardown_appcontext
+def close_db(error):
+    """Close database connection at the end of the request"""
+    if hasattr(g, 'db'):
+        g.db.close()
+
+# Helper functions
+def dict_factory(cursor, row):
+    """Convert database row to dictionary"""
+    return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
+
+def query_db(query, args=(), one=False):
+    """Query the database and return results as dictionaries"""
+    conn = get_db()
+    conn.row_factory = dict_factory
+    cur = conn.cursor()
+    cur.execute(query, args)
+    rv = cur.fetchall()
+    cur.close()
+    return (rv[0] if rv else None) if one else rv
+
+def get_dataframe_from_query(query, params=()):
+    """Execute a query and return results as a pandas DataFrame"""
+    conn = get_db()
+    return pd.read_sql_query(query, conn, params=params)
+
+# API Endpoints
+@app.route(f'{API_PREFIX}/subjects', methods=['GET'])
+def get_subjects():
+    """
+    Get all subjects or filter by academic year
+    
+    Query Parameters:
+    - academic_year: Filter by academic year (e.g., "2023-24")
+    - semester: Filter by semester
+    
+    Returns:
+    - JSON array of subjects with their basic information
+    """
+    academic_year = request.args.get('academic_year')
+    semester = request.args.get('semester')
+    
+    query = """
+    SELECT s.subject_code, s.subject_name, s.credits, s.academic_year, s.semester
+    FROM subjects s
+    """
+    
+    conditions = []
+    params = []
+    
+    if academic_year:
+        conditions.append("s.academic_year = ?")
+        params.append(academic_year)
+    
+    if semester:
+        conditions.append("s.semester = ?")
+        params.append(semester)
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
+    results = query_db(query, params)
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/subjects/<subject_code>', methods=['GET'])
+def get_subject(subject_code):
+    """
+    Get detailed information about a specific subject
+    
+    Parameters:
+    - subject_code: The code of the subject
+    
+    Query Parameters:
+    - academic_year: Filter by academic year (optional)
+    
+    Returns:
+    - JSON object with subject details including performance metrics
+    """
+    academic_year = request.args.get('academic_year')
+    
+    # Get basic subject info
+    query = """
+    SELECT s.subject_code, s.subject_name, s.credits, s.academic_year, s.semester,
+           e.total_enrolled, e.first_time, e.partial_dedication,
+           p.performance_rate, p.success_rate, p.absenteeism_rate
+    FROM subjects s
+    LEFT JOIN enrollment e ON s.subject_code = e.subject_code AND s.academic_year = e.academic_year AND s.semester = e.semester
+    LEFT JOIN performance_rates p ON s.subject_code = p.subject_code AND s.academic_year = p.academic_year AND s.semester = p.semester
+    WHERE s.subject_code = ?
+    """
+    
+    params = [subject_code]
+    
+    if academic_year:
+        query += " AND s.academic_year = ?"
+        params.append(academic_year)
+    
+    result = query_db(query, params, one=True)
+    
+    if not result:
+        abort(404, description=f"Subject with code {subject_code} not found")
+    
+    return jsonify(result)
+
+@app.route(f'{API_PREFIX}/subjects/<subject_code>/historical', methods=['GET'])
+def get_subject_historical(subject_code):
+    """
+    Get historical performance data for a specific subject
+    
+    Parameters:
+    - subject_code: The code of the subject
+    
+    Query Parameters:
+    - rate_type: Filter by rate type (e.g., "rendimiento", "éxito", "absentismo")
+    
+    Returns:
+    - JSON array with historical performance data
+    """
+    rate_type = request.args.get('rate_type')
+    
+    query = """
+    SELECT subject_code, academic_year, rate_type, value
+    FROM historical_rates
+    WHERE subject_code = ?
+    """
+    
+    params = [subject_code]
+    
+    if rate_type:
+        query += " AND rate_type = ?"
+        params.append(rate_type)
+    
+    query += " ORDER BY academic_year"
+    
+    results = query_db(query, params)
+    
+    if not results:
+        abort(404, description=f"Historical data for subject {subject_code} not found")
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/performance/summary', methods=['GET'])
+def get_performance_summary():
+    """
+    Get a summary of performance metrics across all subjects
+    
+    Query Parameters:
+    - academic_year: Filter by academic year (optional)
+    
+    Returns:
+    - JSON object with summary statistics
+    """
+    academic_year = request.args.get('academic_year')
+    
+    # Build query with optional filter
+    query = """
+    SELECT 
+        AVG(performance_rate) as avg_performance,
+        MIN(performance_rate) as min_performance,
+        MAX(performance_rate) as max_performance,
+        AVG(success_rate) as avg_success,
+        MIN(success_rate) as min_success,
+        MAX(success_rate) as max_success,
+        AVG(absenteeism_rate) as avg_absenteeism,
+        MIN(absenteeism_rate) as min_absenteeism,
+        MAX(absenteeism_rate) as max_absenteeism
+    FROM performance_rates
+    """
+    
+    params = []
+    if academic_year:
+        query += " WHERE academic_year = ?"
+        params.append(academic_year)
+    
+    result = query_db(query, params, one=True)
+    
+    if not result:
+        abort(404, description="Performance data not found")
+    
+    return jsonify(result)
+
+@app.route(f'{API_PREFIX}/faculty/changes', methods=['GET'])
+def get_faculty_changes():
+    """
+    Get faculty changes data
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    
+    Returns:
+    - JSON array with faculty change data
+    """
+    subject_code = request.args.get('subject_code')
+    
+    query = """
+    SELECT f.subject_code, s.subject_name, f.year1, f.year2, 
+           f.faculty_added, f.faculty_removed, f.percent_changed
+    FROM faculty_changes f
+    JOIN subjects s ON f.subject_code = s.subject_code
+    """
+    
+    params = []
+    if subject_code:
+        query += " WHERE f.subject_code = ?"
+        params.append(subject_code)
+    
+    results = query_db(query, params)
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/evaluation/changes', methods=['GET'])
+def get_evaluation_changes():
+    """
+    Get evaluation method changes data
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    
+    Returns:
+    - JSON array with evaluation method change data
+    """
+    subject_code = request.args.get('subject_code')
+    
+    query = """
+    SELECT e.subject_code, s.subject_name, e.year1, e.year2, 
+           e.methods_added, e.methods_removed
+    FROM evaluation_changes e
+    JOIN subjects s ON e.subject_code = s.subject_code
+    """
+    
+    params = []
+    if subject_code:
+        query += " WHERE e.subject_code = ?"
+        params.append(subject_code)
+    
+    results = query_db(query, params)
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/correlations', methods=['GET'])
+def get_correlations():
+    """
+    Get correlations between faculty/evaluation changes and performance
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    - faculty_changed: Filter by faculty changed flag (true/false)
+    - evaluation_changed: Filter by evaluation changed flag (true/false)
+    
+    Returns:
+    - JSON array with correlation data
+    """
+    subject_code = request.args.get('subject_code')
+    faculty_changed = request.args.get('faculty_changed')
+    evaluation_changed = request.args.get('evaluation_changed')
+    
+    query = """
+    SELECT *
+    FROM performance_correlations
+    """
+    
+    conditions = []
+    params = []
+    
+    if subject_code:
+        conditions.append("subject_code = ?")
+        params.append(subject_code)
+    
+    if faculty_changed:
+        conditions.append("faculty_changed = ?")
+        params.append(faculty_changed.lower() == 'true')
+    
+    if evaluation_changed:
+        conditions.append("evaluation_changed = ?")
+        params.append(evaluation_changed.lower() == 'true')
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
+    results = query_db(query, params)
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/insights/global', methods=['GET'])
+def get_global_insights():
+    """
+    Get global insights from the most recent analysis
+    
+    Returns:
+    - JSON object with global insights
+    """
+    query = """
+    SELECT *
+    FROM global_insights
+    ORDER BY analysis_id DESC
+    LIMIT 1
+    """
+    
+    result = query_db(query, one=True)
+    
+    if not result:
+        abort(404, description="Global insights not found")
+    
+    # Parse the JSON insights if available
+    if 'insights_json' in result and result['insights_json']:
+        try:
+            result['insights_data'] = json.loads(result['insights_json'])
+        except:
+            pass
+    
+    return jsonify(result)
+
+@app.route(f'{API_PREFIX}/insights/subjects', methods=['GET'])
+def get_subject_insights():
+    """
+    Get subject-specific insights
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    - analysis_id: Use specific analysis ID (optional, defaults to most recent)
+    
+    Returns:
+    - JSON array with subject insights
+    """
+    subject_code = request.args.get('subject_code')
+    analysis_id = request.args.get('analysis_id')
+    
+    # If no analysis_id provided, get the most recent one
+    if not analysis_id:
+        id_query = "SELECT MAX(analysis_id) as latest_id FROM global_insights"
+        latest = query_db(id_query, one=True)
+        if latest and 'latest_id' in latest:
+            analysis_id = latest['latest_id']
+    
+    query = """
+    SELECT *
+    FROM subject_insights
+    WHERE analysis_id = ?
+    """
+    
+    params = [analysis_id]
+    
+    if subject_code:
+        query += " AND subject_code = ?"
+        params.append(subject_code)
+    
+    results = query_db(query, params)
+    
+    # Parse the JSON insights
+    for result in results:
+        if 'insights_json' in result and result['insights_json']:
+            try:
+                result['insights_data'] = json.loads(result['insights_json'])
+            except:
+                pass
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/advanced/trend-analysis', methods=['GET'])
+def get_advanced_trend_analysis():
+    """
+    Get results from advanced trend analysis
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    - significant_only: If 'true', return only statistically significant trends
+    
+    Returns:
+    - JSON array with trend analysis results
+    """
+    # This endpoint assumes you've stored advanced analysis results in the database
+    # If not, you would need to adapt this to load from CSV files
+    
+    subject_code = request.args.get('subject_code')
+    significant_only = request.args.get('significant_only', 'false').lower() == 'true'
+    
+    # If advanced analysis results are in CSV, load them
+    csv_path = os.path.join('output', 'advanced_analysis', 'trend_analysis_results.csv')
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        
+        if subject_code:
+            df = df[df['subject_code'] == subject_code]
+        
+        if significant_only:
+            df = df[df['slope_significant'] == True]
+        
+        results = df.to_dict(orient='records')
+        return jsonify(results)
+    
+    # If results are not available, return empty array
+    return jsonify([])
+
+@app.route(f'{API_PREFIX}/stats', methods=['GET'])
+def get_database_stats():
+    """
+    Get database statistics
+    
+    Returns:
+    - JSON object with database statistics
+    """
+    stats = {}
+    
+    # Count subjects
+    subjects_query = "SELECT COUNT(*) as count FROM subjects"
+    subjects_result = query_db(subjects_query, one=True)
+    stats['total_subjects'] = subjects_result['count'] if subjects_result else 0
+    
+    # Count unique academic years
+    years_query = "SELECT COUNT(DISTINCT academic_year) as count FROM subjects"
+    years_result = query_db(years_query, one=True)
+    stats['total_academic_years'] = years_result['count'] if years_result else 0
+    
+    # Get distinct academic years
+    years_list_query = "SELECT DISTINCT academic_year FROM subjects ORDER BY academic_year"
+    years_list_result = query_db(years_list_query)
+    stats['academic_years'] = [year['academic_year'] for year in years_list_result]
+    
+    # Count historical rates
+    hist_query = "SELECT COUNT(*) as count FROM historical_rates"
+    hist_result = query_db(hist_query, one=True)
+    stats['total_historical_rates'] = hist_result['count'] if hist_result else 0
+    
+    # Check if API analysis data exists
+    faculty_query = "SELECT COUNT(*) as count FROM faculty_changes"
+    try:
+        faculty_result = query_db(faculty_query, one=True)
+        stats['has_api_analysis'] = (faculty_result['count'] > 0) if faculty_result else False
+    except:
+        stats['has_api_analysis'] = False
+    
+    return jsonify(stats)
+
+# Error handlers
+@app.errorhandler(404)
+def resource_not_found(e):
+    return jsonify(error=str(e)), 404
+
+@app.errorhandler(500)
+def internal_error(e):
+    return jsonify(error=str(e)), 500
+
+# Main entry point
+def main():
+    parser = argparse.ArgumentParser(description='Academic Data REST API')
+    parser.add_argument('--db', type=str, default=DATABASE, 
+                        help=f'Path to SQLite database (default: {DATABASE})')
+    parser.add_argument('--port', type=int, default=5000, 
+                        help='Port to run the API server on (default: 5000)')
+    parser.add_argument('--host', type=str, default='127.0.0.1', 
+                        help='Host to run the API server on (default: 127.0.0.1)')
+    parser.add_argument('--debug', action='store_true',
+                        help='Run in debug mode')
+    
+    args = parser.parse_args()
+    
+    # Set database path
+    app.config['DATABASE'] = args.db
+    
+    # Check if database exists
+    if not os.path.exists(args.db):
+        print(f"Error: Database file '{args.db}' not found.")
+        return 1
+    
+    print(f"Starting Academic Data API server on http://{args.host}:{args.port}")
+    print(f"Using database: {args.db}")
+    
+    app.run(host=args.host, port=args.port, debug=args.debug)
+    return 0
+
+if __name__ == '__main__':
+    import sys
+    sys.exit(main())
