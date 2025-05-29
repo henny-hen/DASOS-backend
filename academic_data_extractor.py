@@ -253,6 +253,64 @@ class AcademicDataAnalyzer:
             plt.savefig(f"{output_dir}/historical_trends_{subject_code}.png")
             plt.close()
     
+    def run_advanced_statistical_analysis(self, output_dir="output/advanced_analysis", correlation_df=None):
+        """        
+        Vamos a ejecutar un análisis estadístico avanzado sobre los datos extraídos y los resultados de la correlación de la API.
+
+        
+        Los tests realizados incluyen:
+        - T-tests para comparar tasas de rendimiento entre asignaturas
+        - Cálculo del tamaño del efecto para evaluar la magnitud de las diferencias
+        - Test de tendencia de Mann-Kendall para identificar tendencias significativas en las tasas a lo largo del tiempo
+        - Análisis de correlación entre cambios en el profesorado y tasas de rendimiento
+        - Análisis de correlación entre cambios en los métodos de evaluación y tasas de rendimiento
+        - Análisis de regresión para identificar factores que afectan las tasas de rendimiento
+        - Análisis de series temporales para identificar patrones y estacionalidades
+        - Análisis de varianza (ANOVA) para comparar tasas entre múltiples asignaturas
+
+
+
+        Parameters:
+        - output_dir: Directorio para almacenar los resultados del análisis avanzado
+        
+        Returns:
+        - Booleano indicando si el análisis se completó con éxito
+        """
+        print("Ejecutando análisis estadístico avanzado...")
+        
+        # Asegurarse de que tenemos datos históricos disponibles
+        if not hasattr(self, 'historical_df') or self.historical_df is None:
+            self.historical_df = self.historical_rates_to_dataframe()
+        
+        if self.historical_df.empty:
+            print("No hay datos históricos disponibles para el análisis avanzado.")
+            return False
+        
+        # Check if we have correlation data from API analysis
+        #correlation_df = None
+        #if hasattr(self, 'correlation_df') and not self.correlation_df.empty:
+        #    correlation_df = self.correlation_df
+        
+        # Importar el modulo de analisis estadistico avanzado
+        try:
+            from advanced_statistical_analysis import AdvancedStatisticalAnalysis
+        except ImportError:
+            print("Error: No se pudo importar el módulo de análisis estadístico avanzado. Asegúrate de que 'advanced_statistical_analysis.py' está en el directorio correcto.")
+            return False
+        
+        # Inicializar el analizador con nuestros datos
+        advanced_analyzer = AdvancedStatisticalAnalysis(self.historical_df, correlation_df)
+        
+        # Ejectuar el análisis completo
+        success = advanced_analyzer.run_complete_analysis(output_dir)
+        
+        if success:
+            print(f"Analisis estadistico avanzado completado. Resultados almacenados en: {output_dir}")
+        else:
+            print("Analisis estadístico avanzado fallido.")
+        
+        return success
+
     def compare_subjects(self, output_dir="output"):
         # Comparar asignaturas en base a matriculados y tasas de rendimiento
         os.makedirs(output_dir, exist_ok=True)
@@ -263,7 +321,7 @@ class AcademicDataAnalyzer:
             print("No hay datos suficientes parwa comparar asignaturas.")
             return
         
-        # Compare enrollment numbers
+        # Comparar matriculados
         plt.figure(figsize=(12, 6))
         sns.barplot(x="name", y="enrolled", data=df)
         plt.title("Nº Estudiantes matriculados por asignatura")
@@ -274,7 +332,7 @@ class AcademicDataAnalyzer:
         plt.savefig(f"{output_dir}/enrolled_comparison.png")
         plt.close()
         
-        # Compare first-time enrollment
+        # Comparar matriculados por primera vez
         if "first_time" in df.columns:
             plt.figure(figsize=(12, 6))
             df["first_time_percentage"] = (df["first_time"] / df["total_enrolled"]) * 100
@@ -874,6 +932,9 @@ class AcademicDataAnalyzer:
             from academic_visualizations import AcademicVisualizer
             visualizer = AcademicVisualizer(output_dir=os.path.join(output_dir, "visualizations"))
             visualizer.create_api_insight_visualizations(correlation_df, self.historical_df)
+
+            advanced_output_dir = os.path.join(output_dir, "advanced_analysis")
+            self.run_advanced_statistical_analysis(advanced_output_dir, correlation_df)
             
     def generate_enhanced_insights_report(self, api_results, correlation_df, output_dir="output"):
         # Generar un informe de analisis mejorado

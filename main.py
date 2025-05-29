@@ -5,7 +5,6 @@ import argparse
 import pandas as pd
 import matplotlib.pyplot as plt
 import sqlite3
-import PyPDF2
 import warnings
 import fitz
 

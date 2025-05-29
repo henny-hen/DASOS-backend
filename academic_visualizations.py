@@ -967,3 +967,5 @@ if __name__ == "__main__":
     visualizer = AcademicVisualizer(output_dir="visualization_examples")
     visualizer.load_data(subjects_df, historical_df)
     visualizer.run_all_visualizations()
+
+    

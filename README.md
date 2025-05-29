@@ -26,13 +26,14 @@ This project provides a comprehensive solution for extracting, analyzing, and vi
   - numpy
   - sqlite3 
   - requests
+  - pymannkendall
 
 ## Installation
 
 1. Install required packages:
 
 ```bash
-pip install pandas matplotlib seaborn PyMuPDF textract numpy requests
+pip install pandas matplotlib seaborn PyMuPDF textract numpy requests pymannkendall
 ```
 
 ## Project Structure
@@ -43,6 +44,7 @@ academic_analysis/
 ├── academic_database.py        # SQLite database functionality
 ├── academic_api_extractor.py   # Fetch and analyze data from UPM API
 ├── academic_visualizations.py  # Advanced visualization functions
+├── advanced_statistical_analysis.py  # Advanced statistical methods
 ├── main.py                     # Main program and CLI interface
 └── README.md                   # This documentation file
 ```
@@ -99,6 +101,91 @@ python main.py --dir reports/ --output all_results
 python main.py --analyze-only --db academic_data.db --output analysis_results
 ```
 
+### Starting the REST API Server
+
+To make your academic data available through a REST API for web applications:
+
+```bash
+python rest-api.py --db academic_data.db --port 5000
+```
+
+#### API Server Options
+
+- `--db PATH`: Path to SQLite database (default: "academic_data.db")
+- `--port PORT`: Port to run the API server on (default: 5000)
+- `--host HOST`: Host to run the API server on (default: 127.0.0.1)
+- `--debug`: Run in debug mode
+
+## REST API Endpoints
+
+The REST API provides access to all analysis data stored in the database. All endpoints are prefixed with `/api/v1`.
+
+### Basic Data Endpoints
+
+- **GET /api/v1/subjects**: Get all subjects
+  - Query parameters: `academic_year`, `semester`
+
+- **GET /api/v1/subjects/{subject_code}**: Get detailed information about a specific subject
+  - Query parameters: `academic_year`
+
+- **GET /api/v1/subjects/{subject_code}/historical**: Get historical performance data for a subject
+  - Query parameters: `rate_type`
+
+- **GET /api/v1/performance/summary**: Get summary of performance metrics
+  - Query parameters: `academic_year`
+
+### API Analysis Endpoints
+
+- **GET /api/v1/faculty/changes**: Get faculty changes data
+  - Query parameters: `subject_code`
+
+- **GET /api/v1/evaluation/changes**: Get evaluation method changes data
+  - Query parameters: `subject_code`
+
+- **GET /api/v1/correlations**: Get correlations between changes and performance
+  - Query parameters: `subject_code`, `faculty_changed`, `evaluation_changed`
+
+### Insights Endpoints
+
+- **GET /api/v1/insights/global**: Get global insights from the most recent analysis
+
+- **GET /api/v1/insights/subjects**: Get subject-specific insights
+  - Query parameters: `subject_code`, `analysis_id`
+
+### Advanced Analysis Endpoints
+
+- **GET /api/v1/advanced/trend-analysis**: Get results from advanced trend analysis
+  - Query parameters: `subject_code`, `significant_only`
+
+### Utility Endpoints
+
+- **GET /api/v1/stats**: Get database statistics
+
+## Example API Requests
+
+### Get all subjects from a specific academic year
+
+```
+GET http://localhost:5000/api/v1/subjects?academic_year=2023-24
+```
+
+### Get historical data for a specific subject
+
+```
+GET http://localhost:5000/api/v1/subjects/105000005/historical
+```
+
+### Get performance correlation data for subjects with faculty changes
+
+```
+GET http://localhost:5000/api/v1/correlations?faculty_changed=true
+```
+
+### Get global insights from the latest analysis
+
+```
+GET http://localhost:5000/api/v1/insights/global
+```
 
 
 ## Output
