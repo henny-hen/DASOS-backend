@@ -36,7 +36,8 @@ if os.environ.get('FLASK_ENV') == 'production':
     # Add your frontend URLs here
     allowed_origins = [
         "https://*.vercel.app",
-        "https://your-frontend-domain.com"
+        "https://dasos-upm-e2ck.vercel.app"
+
     ]
     CORS(app, origins=allowed_origins)
 else:
