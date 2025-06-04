@@ -247,7 +247,52 @@ def get_subject_historical(subject_code):
     query += " ORDER BY academic_year"
     
     results = query_db(query, params)
+
+    if not results:
+        abort(404, description=f"Historical data for subject {subject_code} not found")
+
     return jsonify(results)
+
+@app.route(f'{API_PREFIX}/performance/summary', methods=['GET'])
+def get_performance_summary():
+    """
+    Get a summary of performance metrics across all subjects
+    
+    Query Parameters:
+    - academic_year: Filter by academic year (optional)
+    
+    Returns:
+    - JSON object with summary statistics
+    """
+    academic_year = request.args.get('academic_year')
+    
+    # Build query with optional filter
+    query = """
+    SELECT 
+        AVG(performance_rate) as avg_performance,
+        MIN(performance_rate) as min_performance,
+        MAX(performance_rate) as max_performance,
+        AVG(success_rate) as avg_success,
+        MIN(success_rate) as min_success,
+        MAX(success_rate) as max_success,
+        AVG(absenteeism_rate) as avg_absenteeism,
+        MIN(absenteeism_rate) as min_absenteeism,
+        MAX(absenteeism_rate) as max_absenteeism
+    FROM performance_rates
+    """
+    
+    params = []
+    if academic_year:
+        query += " WHERE academic_year = ?"
+        params.append(academic_year)
+    
+    result = query_db(query, params, one=True)
+    
+    if not result:
+        abort(404, description="Performance data not found")
+    
+    return jsonify(result)
+
 
 @app.route(f'{API_PREFIX}/faculty/changes', methods=['GET'])
 def get_faculty_changes():
@@ -312,24 +357,72 @@ def get_correlations():
     
     Query Parameters:
     - subject_code: Filter by subject code (optional)
+    - faculty_changed: Filter by faculty changed flag (true/false)
+    - evaluation_changed: Filter by evaluation changed flag (true/false)
     
     Returns:
     - JSON array with correlation data
     """
     subject_code = request.args.get('subject_code')
+    faculty_changed = request.args.get('faculty_changed')
+    evaluation_changed = request.args.get('evaluation_changed')
     
     query = """
     SELECT *
     FROM performance_correlations
     """
     
+    conditions = []
     params = []
+    
     if subject_code:
-        query += " WHERE subject_code = ?"
+        conditions.append("subject_code = ?")
         params.append(subject_code)
     
+    if faculty_changed:
+        conditions.append("faculty_changed = ?")
+        params.append(faculty_changed.lower() == 'true')
+    
+    if evaluation_changed:
+        conditions.append("evaluation_changed = ?")
+        params.append(evaluation_changed.lower() == 'true')
+    
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    
     results = query_db(query, params)
+    
     return jsonify(results)
+
+@app.route(f'{API_PREFIX}/insights/global', methods=['GET'])
+def get_global_insights():
+    """
+    Get global insights from the most recent analysis
+    
+    Returns:
+    - JSON object with global insights
+    """
+    query = """
+    SELECT *
+    FROM global_insights
+    ORDER BY analysis_id DESC
+    LIMIT 1
+    """
+    
+    result = query_db(query, one=True)
+    
+    if not result:
+        abort(404, description="Global insights not found")
+    
+    # Parse the JSON insights if available
+    if 'insights_json' in result and result['insights_json']:
+        try:
+            result['insights_data'] = json.loads(result['insights_json'])
+        except:
+            pass
+    
+    return jsonify(result)
+
 
 @app.route(f'{API_PREFIX}/insights/subjects', methods=['GET'])
 def get_subject_insights():
@@ -338,23 +431,79 @@ def get_subject_insights():
     
     Query Parameters:
     - subject_code: Filter by subject code (optional)
+    - analysis_id: Use specific analysis ID (optional, defaults to most recent)
     
     Returns:
     - JSON array with subject insights
     """
     subject_code = request.args.get('subject_code')
+    analysis_id = request.args.get('analysis_id')
     
-    # Mock insights for now - replace with actual database query
-    insights = []
+    # If no analysis_id provided, get the most recent one
+    if not analysis_id:
+        id_query = "SELECT MAX(analysis_id) as latest_id FROM global_insights"
+        latest = query_db(id_query, one=True)
+        if latest and 'latest_id' in latest:
+            analysis_id = latest['latest_id']
+    
+    query = """
+    SELECT *
+    FROM subject_insights
+    WHERE analysis_id = ?
+    """
+    
+    params = [analysis_id]
+    
     if subject_code:
-        insights = [{
-            'subject_code': subject_code,
-            'insight_type': 'performance',
-            'message': 'This subject shows stable performance over time',
-            'confidence': 0.85
-        }]
+        query += " AND subject_code = ?"
+        params.append(subject_code)
     
-    return jsonify(insights)
+    results = query_db(query, params)
+    
+    # Parse the JSON insights
+    for result in results:
+        if 'insights_json' in result and result['insights_json']:
+            try:
+                result['insights_data'] = json.loads(result['insights_json'])
+            except:
+                pass
+    
+    return jsonify(results)
+
+@app.route(f'{API_PREFIX}/advanced/trend-analysis', methods=['GET'])
+def get_advanced_trend_analysis():
+    """
+    Get results from advanced trend analysis
+    
+    Query Parameters:
+    - subject_code: Filter by subject code (optional)
+    - significant_only: If 'true', return only statistically significant trends
+    
+    Returns:
+    - JSON array with trend analysis results
+    """
+    # This endpoint assumes you've stored advanced analysis results in the database
+    # If not, you would need to adapt this to load from CSV files
+    
+    subject_code = request.args.get('subject_code')
+    significant_only = request.args.get('significant_only', 'false').lower() == 'true'
+    
+    # If advanced analysis results are in CSV, load them
+    csv_path = os.path.join('output', 'advanced_analysis', 'trend_analysis_results.csv')
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        
+        if subject_code:
+            df = df[df['subject_code'] == subject_code]
+        
+        if significant_only:
+            df = df[df['slope_significant'] == True]
+        
+        results = df.to_dict(orient='records')
+        return jsonify(results)
+    
+    # If results are not available, return empty array
+    return jsonify([])
 
 @app.route(f'{API_PREFIX}/stats', methods=['GET'])
 def get_database_stats():
